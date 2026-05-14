@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { 
   Play, 
   Square, 
@@ -137,7 +137,7 @@ export default function AudioStudio() {
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
+    const files = Array.from(e.target.files || []) as File[];
     if (files.length === 0) return;
 
     const ctx = getAudioCtx();
@@ -293,8 +293,12 @@ export default function AudioStudio() {
             <button onClick={() => setZoom(z => Math.min(4, z + 0.2))} className="p-1 hover:bg-white/10 rounded"><ZoomIn className="w-4 h-4" /></button>
           </div>
 
-          <button onClick={toggleFullscreen} className="p-2 text-white/40 hover:text-white active:scale-90">
-            <Maximize2 className="w-4 h-4" />
+          <button 
+            onClick={toggleFullscreen} 
+            className="flex items-center gap-1.5 px-2 py-1 bg-white/5 hover:bg-white/10 rounded-lg text-white/60 hover:text-white transition-all active:scale-95 text-[10px] font-bold border border-white/5"
+          >
+            <Maximize2 className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">FULLSCREEN</span>
           </button>
 
           <select 
@@ -322,7 +326,7 @@ export default function AudioStudio() {
           </button>
           <label className="p-2 text-orange-500 hover:bg-orange-500/10 rounded-lg cursor-pointer transition-colors">
             <Upload className="w-5 h-5" />
-            <input type="file" className="hidden" multiple accept="audio/*" onChange={handleFileUpload} />
+            <input type="file" className="hidden" multiple accept=".mp3,.wav,.ogg,.m4a,.aac,.flac" onChange={handleFileUpload} />
           </label>
         </div>
 
@@ -396,7 +400,6 @@ export default function AudioStudio() {
                   <TrackItem 
                     key={track.id}
                     track={track}
-                    index={i}
                     pixelsPerSecond={pixelsPerSecond}
                     onUpdate={(updates) => updateTrack(track.id, updates)}
                   />
