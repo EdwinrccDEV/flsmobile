@@ -241,7 +241,9 @@ export default function AudioStudio() {
     if ((e.target as HTMLElement).closest('.track-item-handle')) return;
     if ((e.target as HTMLElement).closest('.track-item-main')) return;
 
-    const rect = e.currentTarget.getBoundingClientRect();
+    const containerRect = scrollContainerRef.current?.getBoundingClientRect();
+    if (!containerRect) return;
+
     let clientX;
     if ('touches' in e) {
       clientX = e.touches[0].clientX;
@@ -250,7 +252,7 @@ export default function AudioStudio() {
     }
 
     const scrollLeft = scrollContainerRef.current?.scrollLeft || 0;
-    const x = clientX - rect.left + scrollLeft;
+    const x = clientX - containerRect.left + scrollLeft;
     const newTime = Math.max(0, x / pixelsPerSecond);
     
     currentTimeRef.current = newTime;
