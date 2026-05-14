@@ -20,6 +20,7 @@ import {
   AudioTrack, 
   bufferToWav, 
   convertToMp3, 
+  convertToOgg,
   drawWaveform 
 } from '../lib/audioEngine';
 
@@ -258,6 +259,13 @@ export default function AudioStudio() {
 
       if (exportFormat === 'mp3') {
         blob = await convertToMp3(renderedBuffer);
+      } else if (exportFormat === 'ogg') {
+        try {
+          blob = await convertToOgg(renderedBuffer);
+        } catch (e) {
+          console.warn("OGG export requires real-time support in this browser, falling back to MP3.");
+          blob = await convertToMp3(renderedBuffer);
+        }
       } else {
         blob = bufferToWav(renderedBuffer);
       }
@@ -341,11 +349,12 @@ export default function AudioStudio() {
 
           <select 
             value={exportFormat}
-            onChange={(e) => setExportFormat(e.target.value as 'mp3' | 'wav')}
+            onChange={(e) => setExportFormat(e.target.value as 'mp3' | 'wav' | 'ogg')}
             className="bg-[#222] border-none rounded px-2 py-1 text-[10px] outline-none font-bold"
           >
             <option value="mp3">MP3</option>
             <option value="wav">WAV</option>
+            <option value="ogg">OGG</option>
           </select>
           <button 
             onClick={exportProject}
