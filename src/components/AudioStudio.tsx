@@ -252,18 +252,23 @@ export default function AudioStudio() {
       source.start(track.offset, track.trimStart, track.duration);
     });
 
-    const renderedBuffer = await offlineCtx.startRendering();
-    let blob;
+    try {
+      const renderedBuffer = await offlineCtx.startRendering();
+      let blob;
 
-    if (exportFormat === 'mp3') {
-      blob = await convertToMp3(renderedBuffer);
-    } else {
-      blob = bufferToWav(renderedBuffer);
+      if (exportFormat === 'mp3') {
+        blob = await convertToMp3(renderedBuffer);
+      } else {
+        blob = bufferToWav(renderedBuffer);
+      }
+
+      const url = URL.createObjectURL(blob);
+      setExportUrl(url);
+    } catch (err) {
+      console.error("Export failed:", err);
+    } finally {
+      setIsExporting(false);
     }
-
-    const url = URL.createObjectURL(blob);
-    setExportUrl(url);
-    setIsExporting(false);
   };
 
   useEffect(() => {
@@ -333,14 +338,6 @@ export default function AudioStudio() {
             <span className="text-[10px] w-8 text-center opacity-50 font-mono">{Math.round(zoom * 100)}%</span>
             <button onClick={() => setZoom(z => Math.min(4, z + 0.2))} className="p-1 hover:bg-white/10 rounded"><ZoomIn className="w-4 h-4" /></button>
           </div>
-
-          <button 
-            onClick={toggleFullscreen} 
-            className="flex items-center gap-1.5 px-2 py-1 bg-white/5 hover:bg-white/10 rounded-lg text-white/60 hover:text-white transition-all active:scale-95 text-[10px] font-bold border border-white/5"
-          >
-            <Maximize2 className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">FULLSCREEN</span>
-          </button>
 
           <select 
             value={exportFormat}

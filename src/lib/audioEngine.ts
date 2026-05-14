@@ -67,8 +67,17 @@ function floatTo16BitPCM(input: Float32Array): Int16Array {
 export async function convertToMp3(renderedBuffer: AudioBuffer, bitrate: number = 128): Promise<Blob> {
   const channels = 2;
   // @ts-ignore
-  const Lame = lamejs.default || lamejs;
-  const mp3encoder = new Lame.Mp3Encoder(channels, renderedBuffer.sampleRate, bitrate);
+  let LameObj = lamejs;
+  if (LameObj.default) LameObj = LameObj.default;
+  
+  // Some versions of lamejs need to be accessed via global or specific property
+  const Mp3Encoder = LameObj.Mp3Encoder || (window as any).lamejs?.Mp3Encoder;
+  
+  if (!Mp3Encoder) {
+    throw new Error("No se pudo cargar el codificador MP3. Por favor, usa formato WAV.");
+  }
+
+  const mp3encoder = new Mp3Encoder(channels, renderedBuffer.sampleRate, bitrate);
   const left = renderedBuffer.getChannelData(0);
   const right = renderedBuffer.numberOfChannels > 1 ? renderedBuffer.getChannelData(1) : left;
   const blockSize = 1152;
