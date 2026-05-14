@@ -360,33 +360,18 @@ export default function AudioStudio() {
           </button>
         </div>
       </header>
-
       <main className="flex-1 flex overflow-hidden relative">
-        <div className={`w-16 bg-[#111] border-r border-white/5 flex flex-col items-center py-4 gap-6 z-40`}>
-          <div className="flex flex-col items-center gap-3 mb-4">
-            <button 
-              onClick={togglePlay} 
-              className="w-11 h-11 bg-orange-500 rounded-2xl flex items-center justify-center active:scale-95 transition-transform shadow-lg shadow-orange-500/20"
-            >
-              {isPlaying ? <Square fill="black" className="w-5 h-5 text-black" /> : <Play fill="black" className="w-5 h-5 text-black ml-0.5" />}
-            </button>
-            <button onClick={stopPlayback} className="w-11 h-11 bg-white/5 hover:bg-white/10 rounded-2xl flex items-center justify-center text-white/40 active:scale-95 transition-transform">
-              <Square fill="currentColor" className="w-4 h-4" />
-            </button>
-          </div>
-
-          <div className="flex flex-col items-center leading-none gap-1 py-3 border-y border-white/5 w-full">
-            <span className="text-orange-500 font-mono text-[10px] font-bold tabular-nums tracking-tighter">
-              {formatTimeShort(currentTime)}
-            </span>
-          </div>
-
-          <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className={`p-3 rounded-2xl transition-colors ${isSidebarOpen ? 'bg-orange-500 text-black shadow-lg shadow-orange-500/20' : 'text-white/40 hover:bg-white/5'}`}>
-            <Settings2 className="w-6 h-6" />
+        {/* Left Toolbar: Settings & Upload */}
+        <div className="w-14 bg-[#111] border-r border-white/5 flex flex-col items-center justify-center gap-4 z-40">
+          <button 
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
+            className={`p-2.5 rounded-xl transition-colors ${isSidebarOpen ? 'bg-orange-500 text-black shadow-lg shadow-orange-500/20' : 'text-white/40 hover:bg-white/5 border border-white/5'}`}
+          >
+            <Settings2 className="w-5 h-5" />
           </button>
           
-          <label className="p-3 text-orange-500 hover:bg-orange-500/10 rounded-2xl cursor-pointer transition-colors active:scale-95">
-            <Upload className="w-6 h-6" />
+          <label className="p-2.5 text-orange-500 hover:bg-orange-500/10 rounded-xl cursor-pointer transition-colors active:scale-95 border border-orange-500/10">
+            <Upload className="w-5 h-5" />
             <input type="file" className="hidden" multiple accept=".mp3,.wav,.ogg,.m4a,.aac,.flac" onChange={handleFileUpload} />
           </label>
         </div>
@@ -395,9 +380,9 @@ export default function AudioStudio() {
           {isSidebarOpen && (
             <motion.aside 
               initial={{ x: -300 }}
-              animate={{ x: 12 }}
+              animate={{ x: 14 }}
               exit={{ x: -300 }}
-              className="absolute left-12 top-4 bottom-4 z-50 w-64 bg-[#1a1a1a]/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl flex flex-col"
+              className="absolute left-14 top-4 bottom-4 z-50 w-64 bg-[#1a1a1a]/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl flex flex-col"
             >
               <div className="p-4 border-b border-white/5 flex items-center justify-between">
                 <span className="font-bold opacity-60 uppercase text-[10px] tracking-widest">Ajustes</span>
@@ -457,7 +442,7 @@ export default function AudioStudio() {
               />
 
               <div className="mt-4 space-y-2 px-0 relative z-20">
-                {tracks.map((track, i) => (
+                {tracks.map((track) => (
                   <TrackItem 
                     key={track.id}
                     track={track}
@@ -475,6 +460,30 @@ export default function AudioStudio() {
                 <div className="w-2.5 h-2.5 bg-red-500 rounded-full -translate-x-[4.5px] mt-[1.5px] shadow-lg border border-white/20" />
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* Right Toolbar: Playback Controls & Timer */}
+        <div className="w-14 bg-[#111] border-l border-white/5 flex flex-col items-center justify-center gap-4 z-40">
+          <button 
+            onClick={togglePlay} 
+            className="w-10 h-10 bg-orange-500 rounded-xl flex items-center justify-center active:scale-95 transition-transform shadow-lg shadow-orange-500/20"
+          >
+            {isPlaying ? <Square fill="black" className="w-4 h-4 text-black" /> : <Play fill="black" className="w-4 h-4 text-black ml-0.5" />}
+          </button>
+          
+          <button 
+            onClick={stopPlayback} 
+            className="w-10 h-10 bg-white/5 hover:bg-white/10 rounded-xl flex items-center justify-center text-white/20 active:scale-95 transition-transform border border-white/5"
+          >
+            <Square fill="currentColor" className="w-3.5 h-3.5" />
+          </button>
+
+          <div className="flex flex-col items-center leading-none mt-2">
+            <span className="text-orange-500 font-mono text-[9px] font-bold tabular-nums">
+              {formatTimeShort(currentTime)}
+            </span>
+            <span className="text-[6px] text-white/20 uppercase font-black mt-0.5 tracking-tighter">TIME</span>
           </div>
         </div>
       </main>
