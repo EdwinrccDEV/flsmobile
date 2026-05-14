@@ -39,7 +39,7 @@ export default function AudioStudio() {
   const [zoom, setZoom] = useState(1);
 
   const audioCtxRef = useRef<AudioContext | null>(null);
-  const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  const activeSourcesRef = useRef<Map<string, AudioBufferSourceNode>>(new Map());
   const activeGainNodesRef = useRef<Map<string, GainNode>>(new Map());
   const startTimeRef = useRef<number>(0);
   const currentTimeRef = useRef<number>(0);
@@ -63,8 +63,47 @@ export default function AudioStudio() {
         source.disconnect();
       } catch (e) {}
     });
-    activeSourcesRef.current = [];
+    activeSourcesRef.current.clear();
     activeGainNodesRef.current.clear();
+  }, []);
+
+  const scheduleTrackLive = useCallback((track: AudioTrack, projectTime: number) => {
+    const ctx = getAudioCtx();
+    const trackPlayOffsetInProject = track.offset;
+    const trackPlayDuration = track.duration;
+    const trackEndInProject = trackPlayOffsetInProject + trackPlayDuration;
+
+    if (trackEndInProject > projectTime) {
+      const source = ctx.createBufferSource();
+      const gain = ctx.createGain();
+      
+      source.buffer = track.buffer;
+      gain.gain.value = track.muted ? 0 : track.volume;
+      
+      source.connect(gain);
+      gain.connect(ctx.destination);
+
+      activeGainNodesRef.current.set(track.id, gain);
+
+      let playbackOffsetInBuffer: number;
+      let delayInProject: number;
+
+      if (projectTime < trackPlayOffsetInProject) {
+        playbackOffsetInBuffer = track.trimStart;
+        delayInProject = trackPlayOffsetInProject - projectTime;
+      } else {
+        const timeSinceClipStart = projectTime - trackPlayOffsetInProject;
+        playbackOffsetInBuffer = track.trimStart + timeSinceClipStart;
+        delayInProject = 0;
+      }
+
+      const remainingDurationInClip = Math.max(0, trackPlayDuration - (playbackOffsetInBuffer - track.trimStart));
+      
+      if (remainingDurationInClip > 0) {
+        source.start(ctx.currentTime + delayInProject, playbackOffsetInBuffer, remainingDurationInClip);
+        activeSourcesRef.current.set(track.id, source);
+      }
+    }
   }, []);
 
   const startPlayback = useCallback(() => {
@@ -76,46 +115,11 @@ export default function AudioStudio() {
     const projectTime = currentTimeRef.current;
 
     tracks.forEach(track => {
-      // We schedule all tracks to allow live unmute/mute, but muted tracks start at 0 gain
-      const trackPlayOffsetInProject = track.offset;
-      const trackPlayDuration = track.duration;
-      const trackEndInProject = trackPlayOffsetInProject + trackPlayDuration;
-
-      if (trackEndInProject > projectTime) {
-        const source = ctx.createBufferSource();
-        const gain = ctx.createGain();
-        
-        source.buffer = track.buffer;
-        gain.gain.value = track.muted ? 0 : track.volume;
-        
-        source.connect(gain);
-        gain.connect(ctx.destination);
-
-        activeGainNodesRef.current.set(track.id, gain);
-
-        let playbackOffsetInBuffer: number;
-        let delayInProject: number;
-
-        if (projectTime < trackPlayOffsetInProject) {
-          playbackOffsetInBuffer = track.trimStart;
-          delayInProject = trackPlayOffsetInProject - projectTime;
-        } else {
-          const timeSinceClipStart = projectTime - trackPlayOffsetInProject;
-          playbackOffsetInBuffer = track.trimStart + timeSinceClipStart;
-          delayInProject = 0;
-        }
-
-        const remainingDurationInClip = Math.max(0, trackPlayDuration - (playbackOffsetInBuffer - track.trimStart));
-        
-        if (remainingDurationInClip > 0) {
-          source.start(ctx.currentTime + delayInProject, playbackOffsetInBuffer, remainingDurationInClip);
-          activeSourcesRef.current.push(source);
-        }
-      }
+      scheduleTrackLive(track, projectTime);
     });
 
     setIsPlaying(true);
-  }, [tracks, stopAll]);
+  }, [tracks, stopAll, scheduleTrackLive]);
 
   const pausePlayback = useCallback(() => {
     const ctx = getAudioCtx();
@@ -187,21 +191,46 @@ export default function AudioStudio() {
   };
 
   const removeTrack = (id: string) => {
+    const source = activeSourcesRef.current.get(id);
+    if (source) {
+      try {
+        source.stop();
+        source.disconnect();
+      } catch (e) {}
+      activeSourcesRef.current.delete(id);
+      activeGainNodesRef.current.delete(id);
+    }
     setTracks(prev => prev.filter(t => t.id !== id));
   };
 
   const updateTrack = (id: string, updates: Partial<AudioTrack>) => {
     setTracks(prev => {
       const newTracks = prev.map(t => t.id === id ? { ...t, ...updates } : t);
+      const track = newTracks.find(t => t.id === id);
+      if (!track) return prev;
       
       // Live volume/mute update
       const gainNode = activeGainNodesRef.current.get(id);
       if (gainNode && audioCtxRef.current) {
-        const track = newTracks.find(t => t.id === id);
-        if (track) {
-          const targetVol = track.muted ? 0 : track.volume;
-          gainNode.gain.setTargetAtTime(targetVol, audioCtxRef.current.currentTime, 0.05);
+        const targetVol = track.muted ? 0 : track.volume;
+        gainNode.gain.setTargetAtTime(targetVol, audioCtxRef.current.currentTime, 0.05);
+      }
+
+      // Live offset/trim/duration update
+      const hasStructuralChange = 'offset' in updates || 'trimStart' in updates || 'duration' in updates;
+      if (isPlaying && hasStructuralChange && audioCtxRef.current) {
+        const source = activeSourcesRef.current.get(id);
+        if (source) {
+          try {
+            source.stop();
+            source.disconnect();
+          } catch(e) {}
+          activeSourcesRef.current.delete(id);
         }
+        
+        const elapsed = audioCtxRef.current.currentTime - startTimeRef.current;
+        const currentProjectTime = currentTimeRef.current + elapsed;
+        scheduleTrackLive(track, currentProjectTime);
       }
       
       return newTracks;
