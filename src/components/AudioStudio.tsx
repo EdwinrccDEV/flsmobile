@@ -362,12 +362,31 @@ export default function AudioStudio() {
       </header>
 
       <main className="flex-1 flex overflow-hidden relative">
-        <div className={`w-12 bg-[#111] border-r border-white/5 flex flex-col items-center py-4 gap-4 z-40`}>
-          <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className={`p-2 rounded-lg transition-colors ${isSidebarOpen ? 'bg-orange-500 text-black' : 'text-white/40 hover:bg-white/5'}`}>
-            <Settings2 className="w-5 h-5" />
+        <div className={`w-16 bg-[#111] border-r border-white/5 flex flex-col items-center py-4 gap-6 z-40`}>
+          <div className="flex flex-col items-center gap-3 mb-4">
+            <button 
+              onClick={togglePlay} 
+              className="w-11 h-11 bg-orange-500 rounded-2xl flex items-center justify-center active:scale-95 transition-transform shadow-lg shadow-orange-500/20"
+            >
+              {isPlaying ? <Square fill="black" className="w-5 h-5 text-black" /> : <Play fill="black" className="w-5 h-5 text-black ml-0.5" />}
+            </button>
+            <button onClick={stopPlayback} className="w-11 h-11 bg-white/5 hover:bg-white/10 rounded-2xl flex items-center justify-center text-white/40 active:scale-95 transition-transform">
+              <Square fill="currentColor" className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex flex-col items-center leading-none gap-1 py-3 border-y border-white/5 w-full">
+            <span className="text-orange-500 font-mono text-[10px] font-bold tabular-nums tracking-tighter">
+              {formatTimeShort(currentTime)}
+            </span>
+          </div>
+
+          <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className={`p-3 rounded-2xl transition-colors ${isSidebarOpen ? 'bg-orange-500 text-black shadow-lg shadow-orange-500/20' : 'text-white/40 hover:bg-white/5'}`}>
+            <Settings2 className="w-6 h-6" />
           </button>
-          <label className="p-2 text-orange-500 hover:bg-orange-500/10 rounded-lg cursor-pointer transition-colors">
-            <Upload className="w-5 h-5" />
+          
+          <label className="p-3 text-orange-500 hover:bg-orange-500/10 rounded-2xl cursor-pointer transition-colors active:scale-95">
+            <Upload className="w-6 h-6" />
             <input type="file" className="hidden" multiple accept=".mp3,.wav,.ogg,.m4a,.aac,.flac" onChange={handleFileUpload} />
           </label>
         </div>
@@ -456,35 +475,6 @@ export default function AudioStudio() {
                 <div className="w-2.5 h-2.5 bg-red-500 rounded-full -translate-x-[4.5px] mt-[1.5px] shadow-lg border border-white/20" />
               </div>
             </div>
-          </div>
-
-          <div className="h-14 bg-[#111] border-t border-white/5 flex items-center px-4 justify-between z-50">
-            <div className="flex items-center gap-6">
-              <div className="flex items-center gap-3">
-                <button 
-                  onClick={togglePlay} 
-                  className="w-10 h-10 bg-orange-500 rounded-full flex items-center justify-center active:scale-95 transition-transform"
-                >
-                  {isPlaying ? <Square fill="black" className="w-4 h-4 text-black" /> : <Play fill="black" className="w-4 h-4 text-black ml-0.5" />}
-                </button>
-                <button onClick={stopPlayback} className="w-10 h-10 flex items-center justify-center text-white/20 hover:text-white/40 active:scale-95 transition-transform">
-                  <Square fill="currentColor" className="w-4 h-4" />
-                </button>
-              </div>
-
-              <div className="flex flex-col items-start leading-none gap-0.5">
-                <span className="text-orange-500 font-mono text-xl font-bold tabular-nums tracking-tighter">
-                  {formatTime(currentTime)}
-                </span>
-                <span className="text-[7px] text-white/30 font-bold tracking-widest uppercase">DAW PLAYHEAD</span>
-              </div>
-            </div>
-
-            <label className="flex items-center gap-2 bg-orange-500 text-black px-4 py-2 rounded-xl font-bold text-xs cursor-pointer active:scale-95 transition-transform">
-              <Upload className="w-4 h-4" />
-              <span>AÑADIR AUDIO</span>
-              <input type="file" className="hidden" multiple accept=".mp3,.wav,.ogg,.m4a,.aac,.flac" onChange={handleFileUpload} />
-            </label>
           </div>
         </div>
       </main>
@@ -706,4 +696,10 @@ function formatTime(seconds: number) {
   const secs = Math.floor(seconds % 60);
   const ms = Math.floor((seconds % 1) * 100);
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
+}
+
+function formatTimeShort(seconds: number) {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
