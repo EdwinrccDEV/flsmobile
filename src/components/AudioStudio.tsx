@@ -13,11 +13,29 @@ import {
   Maximize2,
   ZoomIn,
   ZoomOut,
-  GripVertical
+  GripVertical,
+  Plus,
+  Layers,
+  Piano,
+  Sliders,
+  Scissors,
+  FileAudio,
+  FolderOpen,
+  Keyboard,
+  Activity
 } from 'lucide-react';
-import { motion, AnimatePresence, useDragControls } from 'motion/react';
+import * as Tone from 'tone';
+import { Midi } from '@tonejs/midi';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
-  AudioTrack, 
+  MidiNote,
+  Pattern,
+  ClipType,
+  AudioClip,
+  PatternClip,
+  TrackClip,
+  Instrument,
+  PlaybackTrack,
   bufferToWav, 
   convertToMp3, 
   convertToOgg,
@@ -27,108 +45,110 @@ import {
 const BASE_PIXELS_PER_SECOND = 40;
 const SAMPLE_RATE = 44100;
 
+type ViewType = 'playlist' | 'channelrack' | 'pianoroll' | 'mixer';
+
 export default function AudioStudio() {
-  const [tracks, setTracks] = useState<AudioTrack[]>([]);
+  // --- DAW STates ---
+  const [activeView, setActiveView] = useState<ViewType>('playlist');
+  const [instruments, setInstruments] = useState<Instrument[]>([
+    { id: 'master-synth', name: 'FL Keys', type: 'synth', volume: 0.8, pan: 0, muted: false, solo: false, color: '#4facfe' }
+  ]);
+  const [patterns, setPatterns] = useState<Pattern[]>([
+    { id: 'pattern-1', name: 'Pattern 1', notes: [], color: '#4facfe' }
+  ]);
+  const [clips, setClips] = useState<TrackClip[]>([]);
+  const [playlistTracks, setPlaylistTracks] = useState<PlaybackTrack[]>(
+    Array.from({ length: 10 }, (_, i) => ({ id: `track-${i}`, name: `Track ${i + 1}`, volume: 1, muted: false, solo: false, color: '#222' }))
+  );
+  
+  const [selectedPatternId, setSelectedPatternId] = useState<string>('pattern-1');
+  const [selectedInstrumentId, setSelectedInstrumentId] = useState<string>('master-synth');
+  
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
+  const [bpm, setBpm] = useState(128);
   const [isExporting, setIsExporting] = useState(false);
   const [exportUrl, setExportUrl] = useState<string | null>(null);
   const [exportFormat, setExportFormat] = useState<'mp3' | 'wav'>('mp3');
   const [projectName, setProjectName] = useState('Mi Mezcla');
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [zoom, setZoom] = useState(1);
 
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const activeSourcesRef = useRef<Map<string, AudioBufferSourceNode>>(new Map());
-  const activeGainNodesRef = useRef<Map<string, GainNode>>(new Map());
-  const startTimeRef = useRef<number>(0);
-  const currentTimeRef = useRef<number>(0);
-  const animationFrameRef = useRef<number>(0);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
-
   const pixelsPerSecond = useMemo(() => BASE_PIXELS_PER_SECOND * zoom, [zoom]);
 
-  const getAudioCtx = () => {
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+  // --- Tone.js Refs ---
+  const playersRef = useRef<Map<string, Tone.Player>>(new Map());
+  const instrumentsRef = useRef<Map<string, any>>(new Map());
+  const partsRef = useRef<Tone.Part[]>([]);
+
+  useEffect(() => {
+    // Initialize default synth
+    if (!instrumentsRef.current.has('master-synth')) {
+      const synth = new Tone.PolySynth(Tone.Synth).toDestination();
+      instrumentsRef.current.set('master-synth', synth);
     }
-    return audioCtxRef.current;
+  }, []);
+
+  useEffect(() => {
+    Tone.getTransport().bpm.value = bpm;
+  }, [bpm]);
+
+  const initTone = async () => {
+    if (Tone.getContext().state !== 'running') {
+      await Tone.start();
+      console.log('Tone.js started');
+    }
   };
 
   const stopAll = useCallback(() => {
-    activeSourcesRef.current.forEach(source => {
-      try {
-        source.stop();
-        source.disconnect();
-      } catch (e) {}
-    });
-    activeSourcesRef.current.clear();
-    activeGainNodesRef.current.clear();
+    Tone.getTransport().stop();
+    partsRef.current.forEach(part => part.dispose());
+    partsRef.current = [];
+    playersRef.current.forEach(p => p.stop());
+    setIsPlaying(false);
   }, []);
 
-  const scheduleTrackLive = useCallback((track: AudioTrack, projectTime: number) => {
-    const ctx = getAudioCtx();
-    const trackPlayOffsetInProject = track.offset;
-    const trackPlayDuration = track.duration;
-    const trackEndInProject = trackPlayOffsetInProject + trackPlayDuration;
-
-    if (trackEndInProject > projectTime) {
-      const source = ctx.createBufferSource();
-      const gain = ctx.createGain();
-      
-      source.buffer = track.buffer;
-      gain.gain.value = track.muted ? 0 : track.volume;
-      
-      source.connect(gain);
-      gain.connect(ctx.destination);
-
-      activeGainNodesRef.current.set(track.id, gain);
-
-      let playbackOffsetInBuffer: number;
-      let delayInProject: number;
-
-      if (projectTime < trackPlayOffsetInProject) {
-        playbackOffsetInBuffer = track.trimStart;
-        delayInProject = trackPlayOffsetInProject - projectTime;
-      } else {
-        const timeSinceClipStart = projectTime - trackPlayOffsetInProject;
-        playbackOffsetInBuffer = track.trimStart + timeSinceClipStart;
-        delayInProject = 0;
-      }
-
-      const remainingDurationInClip = Math.max(0, trackPlayDuration - (playbackOffsetInBuffer - track.trimStart));
-      
-      if (remainingDurationInClip > 0) {
-        source.start(ctx.currentTime + delayInProject, playbackOffsetInBuffer, remainingDurationInClip);
-        activeSourcesRef.current.set(track.id, source);
-      }
-    }
-  }, []);
-
-  const startPlayback = useCallback(() => {
-    const ctx = getAudioCtx();
-    if (ctx.state === 'suspended') ctx.resume();
-
+  const startPlayback = useCallback(async () => {
+    await initTone();
     stopAll();
-    startTimeRef.current = ctx.currentTime;
-    const projectTime = currentTimeRef.current;
 
-    tracks.forEach(track => {
-      scheduleTrackLive(track, projectTime);
+    // Schedule Clips
+    clips.forEach(clip => {
+      if (clip.data.type === 'audio') {
+        const player = playersRef.current.get(clip.id);
+        if (player) {
+          player.start(Tone.now() + clip.offset, (clip.data as AudioClip).trimStart, clip.duration);
+        }
+      } else {
+        const pClip = clip.data as PatternClip;
+        const pattern = patterns.find(p => p.id === pClip.patternId);
+        const inst = instrumentsRef.current.get(pClip.instrumentId);
+        if (pattern && inst) {
+          const part = new Tone.Part((time, noteValue) => {
+             inst.triggerAttackRelease(
+               Tone.Frequency(noteValue.note, "midi").toNote(), 
+               noteValue.duration, 
+               time, 
+               noteValue.velocity
+             );
+          }, pattern.notes.map(n => ({ ...n, time: n.time })));
+          
+          part.start(clip.offset);
+          partsRef.current.push(part);
+        }
+      }
     });
 
+    Tone.getTransport().start("+0.1", currentTime);
     setIsPlaying(true);
-  }, [tracks, stopAll, scheduleTrackLive]);
+  }, [clips, patterns, instruments, currentTime, stopAll]);
 
   const pausePlayback = useCallback(() => {
-    const ctx = getAudioCtx();
-    const elapsed = ctx.currentTime - startTimeRef.current;
-    currentTimeRef.current += elapsed;
-    setCurrentTime(currentTimeRef.current);
-    stopAll();
+    Tone.getTransport().pause();
+    setCurrentTime(Tone.getTransport().seconds);
     setIsPlaying(false);
-  }, [stopAll]);
+  }, []);
 
   const togglePlay = () => {
     if (isPlaying) {
@@ -139,124 +159,149 @@ export default function AudioStudio() {
   };
 
   const stopPlayback = () => {
-    stopAll();
-    currentTimeRef.current = 0;
+    Tone.getTransport().stop();
     setCurrentTime(0);
     setIsPlaying(false);
+    stopAll();
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []) as File[];
-    if (files.length === 0) return;
-    
-    if (tracks.length > 0) {
-      setPendingFiles(files);
-    } else {
-      processFiles(files, false);
+  const sliceAudio = async (buffer: AudioBuffer): Promise<{ start: number, end: number, note: number }[]> => {
+    const data = buffer.getChannelData(0);
+    const slices: { start: number, end: number, note: number }[] = [];
+    const threshold = 0.1;
+    const minSliceLength = 0.1; 
+    let inSlice = false;
+    let sliceStart = 0;
+
+    for (let i = 0; i < data.length; i += 500) {
+      const time = i / buffer.sampleRate;
+      const amp = Math.abs(data[i]);
+      
+      if (!inSlice && amp > threshold) {
+        inSlice = true;
+        sliceStart = time;
+      } else if (inSlice && amp < threshold / 2 && (time - sliceStart) > minSliceLength) {
+        inSlice = false;
+        slices.push({ start: sliceStart, end: time, note: 60 + slices.length });
+        if (slices.length >= 16) break;
+      }
+    }
+    if (inSlice) slices.push({ start: sliceStart, end: buffer.duration, note: 60 + slices.length });
+    return slices;
+  };
+
+  const handleMidiImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const midi = new Midi(arrayBuffer);
+      
+      const newPatternId = `pattern-${Date.now()}`;
+      const newNotes: MidiNote[] = [];
+
+      midi.tracks.forEach(track => {
+        track.notes.forEach(note => {
+          newNotes.push({
+            note: note.midi,
+            time: note.time,
+            duration: note.duration,
+            velocity: note.velocity
+          });
+        });
+      });
+
+      const newPattern: Pattern = {
+        id: newPatternId,
+        name: file.name.replace('.mid', ''),
+        notes: newNotes,
+        color: '#f97316'
+      };
+
+      setPatterns(prev => [...prev, newPattern]);
+      setSelectedPatternId(newPatternId);
+    } catch (err) {
+      console.error("MIDI import error", err);
     }
     if (e.target) e.target.value = '';
   };
 
-  const processFiles = async (files: File[], replace: boolean) => {
-    const ctx = getAudioCtx();
-    const newTracks: AudioTrack[] = [];
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []) as File[];
+    if (files.length === 0) return;
 
     for (const file of files) {
       try {
         const arrayBuffer = await file.arrayBuffer();
-        const buffer = await ctx.decodeAudioData(arrayBuffer);
+        const buffer = await Tone.getContext().decodeAudioData(arrayBuffer);
+        const name = file.name.toLowerCase();
         
-        newTracks.push({
-          id: Math.random().toString(36).substr(2, 9),
-          name: file.name,
-          buffer,
-          offset: replace ? 0 : currentTimeRef.current,
-          trimStart: 0,
-          duration: buffer.duration,
-          volume: 0.8,
-          muted: false
-        });
+        if (name.includes('slice') || name.includes('loop')) {
+          const slices = await sliceAudio(buffer);
+          const instId = `sampler-${Date.now()}`;
+          
+          const sampler = new Tone.Sampler({
+            urls: { C4: URL.createObjectURL(new Blob([arrayBuffer])) },
+          }).toDestination();
+          
+          instrumentsRef.current.set(instId, sampler);
+          
+          setInstruments(prev => [...prev, {
+            id: instId, name: `Slicex: ${file.name}`, type: 'sampler',
+            volume: 0.8, pan: 0, muted: false, solo: false, color: '#f97316',
+            sampleBuffer: buffer, slices: slices
+          }]);
+          
+          const patId = `pattern-slicex-${Date.now()}`;
+          setPatterns(prev => [...prev, {
+            id: patId, name: `Slices: ${file.name}`,
+            notes: slices.map((s, i) => ({ note: s.note, time: i * 0.5, duration: 0.4, velocity: 0.8 })),
+            color: '#f97316'
+          }]);
+        } else {
+          const clipId = `audio-${Date.now()}`;
+          const player = new Tone.Player(buffer).toDestination();
+          playersRef.current.set(clipId, player);
+
+          setClips(prev => [...prev, {
+            id: clipId, trackId: 'track-0', offset: Tone.getTransport().seconds,
+            duration: buffer.duration, data: { type: 'audio', buffer, trimStart: 0 }
+          }]);
+        }
       } catch (err) {
-        console.error("Error decoding file:", file.name, err);
+        console.error("Error decoding audio:", err);
       }
     }
+    if (e.target) e.target.value = '';
+  };
 
-    if (replace) {
-      stopPlayback();
-      setTracks(newTracks);
-    } else {
-      setTracks(prev => [...prev, ...newTracks]);
+  const processFiles = async (files: File[], clearExisting: boolean) => {
+    if (clearExisting) {
+      setClips([]);
+      playersRef.current.forEach(p => p.dispose());
+      playersRef.current.clear();
     }
     setPendingFiles(null);
-  };
-
-  const removeTrack = (id: string) => {
-    const source = activeSourcesRef.current.get(id);
-    if (source) {
-      try {
-        source.stop();
-        source.disconnect();
-      } catch (e) {}
-      activeSourcesRef.current.delete(id);
-      activeGainNodesRef.current.delete(id);
-    }
-    setTracks(prev => prev.filter(t => t.id !== id));
-  };
-
-  const updateTrack = (id: string, updates: Partial<AudioTrack>) => {
-    setTracks(prev => {
-      const newTracks = prev.map(t => t.id === id ? { ...t, ...updates } : t);
-      const track = newTracks.find(t => t.id === id);
-      if (!track) return prev;
-      
-      // Live volume/mute update
-      const gainNode = activeGainNodesRef.current.get(id);
-      if (gainNode && audioCtxRef.current) {
-        const targetVol = track.muted ? 0 : track.volume;
-        gainNode.gain.setTargetAtTime(targetVol, audioCtxRef.current.currentTime, 0.05);
-      }
-
-      // Live offset/trim/duration update
-      const hasStructuralChange = 'offset' in updates || 'trimStart' in updates || 'duration' in updates;
-      if (isPlaying && hasStructuralChange && audioCtxRef.current) {
-        const source = activeSourcesRef.current.get(id);
-        if (source) {
-          try {
-            source.stop();
-            source.disconnect();
-          } catch(e) {}
-          activeSourcesRef.current.delete(id);
-        }
-        
-        const elapsed = audioCtxRef.current.currentTime - startTimeRef.current;
-        const currentProjectTime = currentTimeRef.current + elapsed;
-        scheduleTrackLive(track, currentProjectTime);
-      }
-      
-      return newTracks;
-    });
+    const event = { target: { files } } as unknown as React.ChangeEvent<HTMLInputElement>;
+    await handleFileUpload(event);
   };
 
   const handleTimelineClick = (e: React.MouseEvent | React.TouchEvent) => {
-    if ((e.target as HTMLElement).closest('.track-item-handle')) return;
-    if ((e.target as HTMLElement).closest('.track-item-main')) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('.clip-item')) return;
 
-    const containerRect = scrollContainerRef.current?.getBoundingClientRect();
-    if (!containerRect) return;
-
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     let clientX;
-    if ('touches' in e) {
-      clientX = e.touches[0].clientX;
-    } else {
-      clientX = (e as React.MouseEvent).clientX;
-    }
+    if ('touches' in e) clientX = e.touches[0].clientX;
+    else clientX = (e as React.MouseEvent).clientX;
 
-    const scrollLeft = scrollContainerRef.current?.scrollLeft || 0;
-    const x = clientX - containerRect.left + scrollLeft;
+    const scrollLeft = (e.currentTarget as HTMLElement).scrollLeft || 0;
+    const x = clientX - rect.left + scrollLeft;
     const newTime = Math.max(0, x / pixelsPerSecond);
     
-    currentTimeRef.current = newTime;
     setCurrentTime(newTime);
+    Tone.getTransport().seconds = newTime;
     
     if (isPlaying) {
       startPlayback();
@@ -264,45 +309,45 @@ export default function AudioStudio() {
   };
 
   const exportProject = async () => {
-    if (tracks.length === 0) return;
+    if (clips.length === 0) return;
     if (isPlaying) pausePlayback();
 
     setIsExporting(true);
     setExportUrl(null);
 
-    const maxDuration = Math.max(...tracks.map(t => t.offset + t.duration));
-    const offlineCtx = new OfflineAudioContext(2, Math.ceil(SAMPLE_RATE * maxDuration), SAMPLE_RATE);
-
-    tracks.forEach(track => {
-      const source = offlineCtx.createBufferSource();
-      const gain = offlineCtx.createGain();
-      source.buffer = track.buffer;
-      gain.gain.value = track.muted ? 0 : track.volume;
-      
-      source.connect(gain);
-      gain.connect(offlineCtx.destination);
-      source.start(track.offset, track.trimStart, track.duration);
-    });
-
+    const maxDuration = Math.max(...clips.map(c => c.offset + c.duration));
+    
     try {
-      const renderedBuffer = await offlineCtx.startRendering();
-      let blob;
-
-      if (exportFormat === 'mp3') {
-        blob = await convertToMp3(renderedBuffer);
-      } else if (exportFormat === 'ogg') {
-        try {
-          blob = await convertToOgg(renderedBuffer);
-        } catch (e) {
-          console.warn("OGG export requires real-time support in this browser, falling back to MP3.");
-          blob = await convertToMp3(renderedBuffer);
+      const renderedBuffer = await Tone.Offline(async () => {
+        for (const clip of clips) {
+          if (clip.data.type === 'audio') {
+            const player = new Tone.Player(clip.data.buffer).toDestination();
+            player.start(clip.offset, clip.data.trimStart, clip.duration);
+          } else {
+            const pClip = clip.data as PatternClip;
+            const pattern = patterns.find(p => p.id === pClip.patternId);
+            const inst = instruments.find(i => i.id === pClip.instrumentId);
+            if (pattern && inst) {
+              const synth = new Tone.PolySynth(Tone.Synth).toDestination();
+              pattern.notes.forEach(note => {
+                synth.triggerAttackRelease(
+                  Tone.Frequency(note.note, "midi").toNote(),
+                  note.duration,
+                  note.time + clip.offset,
+                  note.velocity
+                );
+              });
+            }
+          }
         }
-      } else {
-        blob = bufferToWav(renderedBuffer);
-      }
+      }, maxDuration);
 
-      const url = URL.createObjectURL(blob);
-      setExportUrl(url);
+      let blob;
+      if (exportFormat === 'mp3') blob = await convertToMp3(renderedBuffer.get());
+      else if (exportFormat === 'ogg') blob = await convertToMp3(renderedBuffer.get()); 
+      else blob = bufferToWav(renderedBuffer.get());
+
+      setExportUrl(URL.createObjectURL(blob));
     } catch (err) {
       console.error("Export failed:", err);
     } finally {
@@ -311,22 +356,13 @@ export default function AudioStudio() {
   };
 
   useEffect(() => {
-    const tick = () => {
-      if (isPlaying && audioCtxRef.current) {
-        const elapsed = audioCtxRef.current.currentTime - startTimeRef.current;
-        setCurrentTime(currentTimeRef.current + elapsed);
+    const timer = setInterval(() => {
+      if (isPlaying) {
+        setCurrentTime(Tone.getTransport().seconds);
       }
-      animationFrameRef.current = requestAnimationFrame(tick);
-    };
-    animationFrameRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animationFrameRef.current);
+    }, 50);
+    return () => clearInterval(timer);
   }, [isPlaying]);
-
-  const maxTimelineWidth = Math.max(
-    window.innerWidth,
-    ...tracks.map(t => (t.offset + t.duration) * pixelsPerSecond + 800),
-    currentTime * pixelsPerSecond + 800
-  );
 
   const toggleFullscreen = () => {
     const doc = document as any;
@@ -358,170 +394,192 @@ export default function AudioStudio() {
         </p>
       </div>
 
-      <header className="flex items-center justify-between px-3 h-12 border-b border-white/5 bg-[#111] z-50">
-        <div className="flex items-center gap-3">
-          <div className="p-1.5 bg-orange-500 rounded-md">
-            <Music className="w-4 h-4 text-black" />
+      <header className="flex items-center justify-between px-3 h-14 border-b border-white/5 bg-[#0a0a0a] z-50">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 mr-4">
+            <div className="p-1.5 bg-orange-500 rounded-md">
+              <Music className="w-4 h-4 text-black" />
+            </div>
+            <span className="font-black text-sm tracking-tighter italic">FL-WEB</span>
           </div>
-          <input 
-            type="text" 
-            value={projectName}
-            onChange={(e) => setProjectName(e.target.value)}
-            className="bg-transparent border-none focus:outline-none font-bold text-sm w-32 truncate"
-          />
+
+          <div className="flex items-center gap-1 bg-white/5 p-1 rounded-lg">
+            <button 
+              onClick={() => setActiveView('playlist')}
+              className={`p-2 rounded-md transition-all ${activeView === 'playlist' ? 'bg-orange-500 text-black shadow-lg shadow-orange-500/20' : 'text-white/40 hover:bg-white/5'}`}
+            >
+              <Layers className="w-4 h-4" />
+            </button>
+            <button 
+              onClick={() => setActiveView('pianoroll')}
+              className={`p-2 rounded-md transition-all ${activeView === 'pianoroll' ? 'bg-orange-500 text-black shadow-lg shadow-orange-500/20' : 'text-white/40 hover:bg-white/5'}`}
+            >
+              <Piano className="w-4 h-4" />
+            </button>
+            <button 
+              onClick={() => setActiveView('channelrack')}
+              className={`p-2 rounded-md transition-all ${activeView === 'channelrack' ? 'bg-orange-500 text-black shadow-lg shadow-orange-500/20' : 'text-white/40 hover:bg-white/5'}`}
+            >
+              <Keyboard className="w-4 h-4" />
+            </button>
+            <button 
+              onClick={() => setActiveView('mixer')}
+              className={`p-2 rounded-md transition-all ${activeView === 'mixer' ? 'bg-orange-500 text-black shadow-lg shadow-orange-500/20' : 'text-white/40 hover:bg-white/5'}`}
+            >
+              <Sliders className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-3 ml-4 bg-white/5 px-3 py-1.5 rounded-lg border border-white/5">
+            <Activity className="w-3.5 h-3.5 text-orange-500" />
+            <div className="flex flex-col leading-none">
+              <input 
+                type="number" 
+                value={bpm} 
+                onChange={(e) => setBpm(parseInt(e.target.value))}
+                className="bg-transparent border-none text-[10px] font-black w-8 focus:outline-none p-0"
+              />
+              <span className="text-[6px] text-white/40 font-bold">BPM</span>
+            </div>
+          </div>
         </div>
-        
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1 bg-white/5 rounded-lg p-1 mr-2">
+
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1 bg-white/5 rounded-lg p-1">
             <button onClick={() => setZoom(z => Math.max(0.5, z - 0.2))} className="p-1 hover:bg-white/10 rounded"><ZoomOut className="w-4 h-4" /></button>
             <span className="text-[10px] w-8 text-center opacity-50 font-mono">{Math.round(zoom * 100)}%</span>
             <button onClick={() => setZoom(z => Math.min(4, z + 0.2))} className="p-1 hover:bg-white/10 rounded"><ZoomIn className="w-4 h-4" /></button>
           </div>
 
-          <select 
-            value={exportFormat}
-            onChange={(e) => setExportFormat(e.target.value as 'mp3' | 'wav' | 'ogg')}
-            className="bg-[#222] border-none rounded px-2 py-1 text-[10px] outline-none font-bold"
-          >
-            <option value="mp3">MP3</option>
-            <option value="wav">WAV</option>
-            <option value="ogg">OGG</option>
-          </select>
           <button 
             onClick={exportProject}
-            disabled={tracks.length === 0 || isExporting}
-            className="bg-orange-500 text-black px-3 py-1 rounded-md font-bold text-[10px] disabled:opacity-50 transition-all active:scale-95 flex items-center gap-2"
+            disabled={clips.length === 0 || isExporting}
+            className="bg-orange-500 text-black px-4 py-1.5 rounded-lg font-black text-[10px] disabled:opacity-50 transition-all active:scale-95 flex items-center gap-2 shadow-lg shadow-orange-500/20"
           >
-            {isExporting && <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }} className="w-3 h-3 border-2 border-black/30 border-t-black rounded-full" />}
-            {isExporting ? "PROCESANDO..." : "EXPORT"}
+            {isExporting ? <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1 }} className="w-3 h-3 border-2 border-black/30 border-t-black rounded-full" /> : <Download className="w-3 h-3" />}
+            {isExporting ? "EXPORTING..." : "EXPORT"}
           </button>
         </div>
       </header>
+
       <main className="flex-1 flex overflow-hidden relative">
-        {/* Left Toolbar: Settings & Upload */}
-        <div className="w-14 bg-[#111] border-r border-white/5 flex flex-col items-center justify-center gap-4 z-40">
+        {/* Left Toolbar: Browser & Shortcuts */}
+        <div className="w-14 bg-[#0a0a0a] border-r border-white/5 flex flex-col items-center py-4 gap-6 z-40">
           <button 
             onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
-            className={`p-2.5 rounded-xl transition-colors ${isSidebarOpen ? 'bg-orange-500 text-black shadow-lg shadow-orange-500/20' : 'text-white/40 hover:bg-white/5 border border-white/5'}`}
+            className={`p-2.5 rounded-xl transition-colors ${isSidebarOpen ? 'bg-orange-500 text-black' : 'text-white/40 hover:bg-white/5 border border-white/5'}`}
           >
-            <Settings2 className="w-5 h-5" />
+            <FolderOpen className="w-5 h-5" />
           </button>
           
-          <label className="p-2.5 text-orange-500 hover:bg-orange-500/10 rounded-xl cursor-pointer transition-colors active:scale-95 border border-orange-500/10">
-            <Upload className="w-5 h-5" />
+          <label className="p-2.5 text-orange-500 hover:bg-orange-500/10 rounded-xl cursor-pointer transition-colors active:scale-95 border border-orange-500/10 relative">
+            <FileAudio className="w-5 h-5" />
             <input type="file" className="hidden" multiple accept=".mp3,.wav,.ogg,.m4a,.aac,.flac" onChange={handleFileUpload} />
+          </label>
+
+          <label className="p-2.5 text-blue-500 hover:bg-blue-500/10 rounded-xl cursor-pointer transition-colors active:scale-95 border border-blue-500/10">
+            <Music className="w-5 h-5" />
+            <input type="file" className="hidden" accept=".mid,.midi" onChange={handleMidiImport} />
           </label>
         </div>
 
         <AnimatePresence>
           {isSidebarOpen && (
             <motion.aside 
-              initial={{ x: -300 }}
-              animate={{ x: 14 }}
-              exit={{ x: -300 }}
-              className="absolute left-14 top-4 bottom-4 z-50 w-64 bg-[#1a1a1a]/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl flex flex-col"
+              initial={{ x: -260 }} animate={{ x: 0 }} exit={{ x: -260 }}
+              className="w-64 bg-[#0d0d0d] border-r border-white/5 flex flex-col z-30"
             >
-              <div className="p-4 border-b border-white/5 flex items-center justify-between">
-                <span className="font-bold opacity-60 uppercase text-[10px] tracking-widest">Ajustes</span>
-                <button onClick={() => setIsSidebarOpen(false)}><ChevronLeft className="w-4 h-4" /></button>
+              <div className="p-4 border-b border-white/5 bg-white/5">
+                <span className="font-black text-[10px] tracking-widest opacity-40 uppercase">Browser</span>
               </div>
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {tracks.map((track) => (
-                  <div key={track.id} className="p-3 bg-white/5 rounded-xl border border-white/5">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] truncate max-w-[140px] font-bold opacity-80">{track.name}</span>
-                      <button onClick={() => removeTrack(track.id)} className="text-red-500/60 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+              
+              <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                <div className="px-2 py-1 text-[10px] font-bold text-white/20 uppercase tracking-tighter">Instruments</div>
+                {instruments.map(inst => (
+                  <button 
+                    key={inst.id}
+                    onClick={() => { setSelectedInstrumentId(inst.id); setActiveView('channelrack'); }}
+                    className={`w-full text-left px-3 py-2 rounded-lg text-xs flex items-center justify-between transition-colors ${selectedInstrumentId === inst.id ? 'bg-orange-500/10 text-orange-500' : 'text-white/40 hover:bg-white/5'}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: inst.color }} />
+                      <span className="truncate max-w-[120px]">{inst.name}</span>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <button 
-                        onClick={() => updateTrack(track.id, { muted: !track.muted })}
-                        className={`p-1.5 rounded-lg transition-colors ${track.muted ? 'bg-red-500/20 text-red-500' : 'bg-white/5 text-white/40'}`}
-                      >
-                        {track.muted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
-                      </button>
-                      <input 
-                        type="range" min="0" max="1.5" step="0.05"
-                        value={track.volume}
-                        onChange={(e) => updateTrack(track.id, { volume: parseFloat(e.target.value) })}
-                        className="flex-1 accent-orange-500 h-1 bg-white/10 rounded-full appearance-none"
-                      />
+                  </button>
+                ))}
+
+                <div className="px-2 py-1 mt-4 text-[10px] font-bold text-white/20 uppercase tracking-tighter">Patterns</div>
+                {patterns.map(pat => (
+                  <button 
+                    key={pat.id}
+                    onClick={() => { setSelectedPatternId(pat.id); setActiveView('pianoroll'); }}
+                    className={`w-full text-left px-3 py-2 rounded-lg text-xs flex items-center justify-between transition-colors ${selectedPatternId === pat.id ? 'bg-orange-500/10 text-orange-500' : 'text-white/40 hover:bg-white/5'}`}
+                  >
+                    <div className="flex items-center gap-2">
+                       <Layers className="w-3 h-3" />
+                       <span className="truncate max-w-[120px]">{pat.name}</span>
                     </div>
-                  </div>
+                    <span className="text-[10px] opacity-20">{pat.notes.length}</span>
+                  </button>
                 ))}
               </div>
             </motion.aside>
           )}
         </AnimatePresence>
 
-        <div className="flex-1 flex flex-col relative overflow-hidden">
-          <div 
-            ref={scrollContainerRef}
-            className="flex-1 overflow-auto relative touch-pan-x touch-pan-y"
-          >
-            <div 
-              onClick={handleTimelineClick}
-              className="relative min-h-full"
-              style={{ width: `${maxTimelineWidth}px` }}
-            >
-              <div className="h-6 bg-[#0a0a0a] border-b border-white/5 sticky top-0 z-40 flex items-end">
-                {Array.from({ length: Math.ceil(maxTimelineWidth / pixelsPerSecond) + 1 }).map((_, i) => (
-                  <div key={i} className="absolute bottom-0 border-l border-white/10 h-2" style={{ left: `${i * pixelsPerSecond}px` }}>
-                    <span className="absolute -top-4 -left-2 text-[8px] text-white/20 font-mono">{i}s</span>
-                  </div>
-                ))}
-              </div>
+        <div className="flex-1 flex flex-col relative overflow-hidden bg-[#050505]">
+          {activeView === 'playlist' && (
+             <PlaylistView 
+                clips={clips}
+                tracks={playlistTracks}
+                pixelsPerSecond={pixelsPerSecond}
+                currentTime={currentTime}
+                onTimelineClick={handleTimelineClick}
+                onUpdateClip={(id, updates) => setClips(prev => prev.map(c => c.id === id ? { ...c, ...updates } : c))}
+                onDeleteClip={(id) => setClips(prev => prev.filter(c => c.id !== id))}
+             />
+          )}
 
-              <div className="absolute inset-0 top-6 pointer-events-none"
-                style={{ 
-                  backgroundImage: `linear-gradient(to right, rgba(255,255,255,0.02) 1px, transparent 1px)`,
-                  backgroundSize: `${pixelsPerSecond}px 100%`,
-                }}
-              />
+          {activeView === 'channelrack' && (
+            <ChannelRackView 
+              instruments={instruments}
+              patterns={patterns}
+              onUpdateInstrument={(id, updates) => setInstruments(prev => prev.map(i => i.id === id ? { ...i, ...updates } : i))}
+              onAddPattern={() => setPatterns(prev => [...prev, { id: `pat-${Date.now()}`, name: `Pattern ${prev.length + 1}`, notes: [], color: '#4facfe' }])}
+            />
+          )}
 
-              <div className="mt-4 space-y-2 px-0 relative z-20">
-                {tracks.map((track) => (
-                  <TrackItem 
-                    key={track.id}
-                    track={track}
-                    pixelsPerSecond={pixelsPerSecond}
-                    onUpdate={(updates) => updateTrack(track.id, updates)}
-                    onDelete={() => removeTrack(track.id)}
-                  />
-                ))}
-              </div>
+          {activeView === 'pianoroll' && (
+             <PianoRollView 
+                pattern={patterns.find(p => p.id === selectedPatternId)!}
+                instrument={instruments.find(i => i.id === selectedInstrumentId)!}
+                onUpdatePattern={(updates) => setPatterns(prev => prev.map(p => p.id === selectedPatternId ? { ...p, ...updates } : p))}
+             />
+          )}
 
-              <div 
-                className="absolute top-0 bottom-0 w-[1px] bg-red-500 z-30 pointer-events-none shadow-[0_0_15px_rgba(239,68,68,0.8)]"
-                style={{ left: `${currentTime * pixelsPerSecond}px` }}
-              >
-                <div className="w-2.5 h-2.5 bg-red-500 rounded-full -translate-x-[4.5px] mt-[1.5px] shadow-lg border border-white/20" />
-              </div>
-            </div>
-          </div>
+          {activeView === 'mixer' && <MixerView tracks={playlistTracks} instruments={instruments} />}
         </div>
 
-        {/* Right Toolbar: Playback Controls & Timer */}
-        <div className="w-14 bg-[#111] border-l border-white/5 flex flex-col items-center justify-center gap-4 z-40">
-          <button 
-            onClick={togglePlay} 
-            className="w-10 h-10 bg-orange-500 rounded-xl flex items-center justify-center active:scale-95 transition-transform shadow-lg shadow-orange-500/20"
-          >
-            {isPlaying ? <Square fill="black" className="w-4 h-4 text-black" /> : <Play fill="black" className="w-4 h-4 text-black ml-0.5" />}
-          </button>
-          
-          <button 
-            onClick={stopPlayback} 
-            className="w-10 h-10 bg-white/5 hover:bg-white/10 rounded-xl flex items-center justify-center text-white/20 active:scale-95 transition-transform border border-white/5"
-          >
-            <Square fill="currentColor" className="w-3.5 h-3.5" />
-          </button>
+        {/* Right Toolbar: Playback Controls */}
+        <div className="w-16 bg-[#0a0a0a] border-l border-white/5 flex flex-col items-center py-6 gap-6 z-40">
+           <button 
+             onClick={togglePlay}
+             className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${isPlaying ? 'bg-red-500 shadow-lg shadow-red-500/20' : 'bg-orange-500 shadow-lg shadow-orange-500/20'} active:scale-90`}
+           >
+             {isPlaying ? <Square className="w-5 h-5 text-black" fill="currentColor" /> : <Play className="w-5 h-5 text-black ml-1" fill="currentColor" />}
+           </button>
+           
+           <button 
+             onClick={stopPlayback}
+             className="w-10 h-10 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl flex items-center justify-center text-white/20 active:scale-95"
+           >
+             <Square className="w-4 h-4" />
+           </button>
 
-          <div className="flex flex-col items-center leading-none mt-2">
-            <span className="text-orange-500 font-mono text-[9px] font-bold tabular-nums">
-              {formatTimeShort(currentTime)}
-            </span>
-            <span className="text-[6px] text-white/20 uppercase font-black mt-0.5 tracking-tighter">TIME</span>
-          </div>
+           <div className="mt-auto flex flex-col items-center leading-none mb-4">
+              <span className="text-orange-500 font-mono text-[10px] font-black">{formatTimeShort(currentTime)}</span>
+              <span className="text-[6px] text-white/20 font-bold uppercase mt-1">Time</span>
+           </div>
         </div>
       </main>
 
@@ -584,158 +642,286 @@ export default function AudioStudio() {
   );
 }
 
-interface TrackItemProps {
-  track: AudioTrack;
+// --- Sub-components ---
+
+interface PlaylistViewProps {
+  clips: TrackClip[];
+  tracks: PlaybackTrack[];
   pixelsPerSecond: number;
-  onUpdate: (updates: Partial<AudioTrack>) => void;
-  onDelete: () => void;
+  currentTime: number;
+  onTimelineClick: (e: React.MouseEvent | React.TouchEvent) => void;
+  onUpdateClip: (id: string, updates: Partial<TrackClip>) => void;
+  onDeleteClip: (id: string) => void;
 }
 
-const TrackItem: React.FC<TrackItemProps> = ({ track, pixelsPerSecond, onUpdate, onDelete }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const dragRef = useRef<{ 
-    type: 'move' | 'trim-left' | 'trim-right', 
-    startX: number, 
-    initialOffset: number, 
-    initialTrimStart: number, 
-    initialDuration: number 
-  } | null>(null);
-
-  useEffect(() => {
-    if (canvasRef.current) {
-      drawWaveform(track.buffer, canvasRef.current, track.muted ? '#222' : '#f97316');
-    }
-  }, [track.buffer, track.muted, pixelsPerSecond]);
-
-  const handlePointerDown = (e: React.PointerEvent, type: 'move' | 'trim-left' | 'trim-right') => {
-    e.stopPropagation();
-    const target = e.currentTarget as HTMLElement;
-    target.setPointerCapture(e.pointerId);
-    
-    dragRef.current = {
-      type,
-      startX: e.clientX,
-      initialOffset: track.offset,
-      initialTrimStart: track.trimStart,
-      initialDuration: track.duration
-    };
-  };
-
-  const handlePointerMove = (e: React.PointerEvent) => {
-    if (!dragRef.current) return;
-    
-    const deltaX = e.clientX - dragRef.current.startX;
-    const deltaSeconds = deltaX / pixelsPerSecond;
-
-    if (dragRef.current.type === 'move') {
-      const newOffset = Math.max(0, dragRef.current.initialOffset + deltaSeconds);
-      onUpdate({ offset: newOffset });
-    } 
-    else if (dragRef.current.type === 'trim-left') {
-      // Diff shows how much we are moving the left handle
-      const maxTrim = dragRef.current.initialTrimStart + dragRef.current.initialDuration - 0.01;
-      const newTrimStart = Math.max(0, Math.min(maxTrim, dragRef.current.initialTrimStart + deltaSeconds));
-      const diff = newTrimStart - dragRef.current.initialTrimStart;
-      
-      onUpdate({
-        trimStart: newTrimStart,
-        offset: dragRef.current.initialOffset + diff,
-        duration: Math.max(0.01, dragRef.current.initialDuration - diff)
-      });
-    }
-    else if (dragRef.current.type === 'trim-right') {
-      const maxAllowedDuration = track.buffer.duration - dragRef.current.initialTrimStart;
-      const newDuration = Math.max(0.01, Math.min(maxAllowedDuration, dragRef.current.initialDuration + deltaSeconds));
-      onUpdate({ duration: newDuration });
-    }
-  };
-
-  const handlePointerUp = (e: React.PointerEvent) => {
-    if (!dragRef.current) return;
-    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-    dragRef.current = null;
-  };
+const PlaylistView: React.FC<PlaylistViewProps> = ({ 
+  clips, tracks, pixelsPerSecond, currentTime, onTimelineClick, onUpdateClip, onDeleteClip 
+}) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const maxWidth = Math.max(window.innerWidth, ...clips.map(c => (c.offset + c.duration) * pixelsPerSecond + 1000));
 
   return (
-    <div className="relative h-16 w-full">
+    <div ref={containerRef} className="flex-1 overflow-auto relative select-none">
       <div 
-        className={`absolute h-14 rounded-xl overflow-hidden border transition-shadow touch-none select-none ${
-          track.muted ? 'bg-black opacity-40 border-white/5' : 'bg-[#1a1a1a] border-white/10 shadow-lg active:border-orange-500 active:shadow-orange-500/20'
-        }`}
-        style={{ 
-          width: `${track.duration * pixelsPerSecond}px`,
-          left: `${track.offset * pixelsPerSecond}px` 
-        }}
+        onClick={onTimelineClick}
+        className="relative min-h-full"
+        style={{ width: `${maxWidth}px` }}
       >
-        {/* Main Move Area */}
-        <div 
-          onPointerDown={(e) => handlePointerDown(e, 'move')}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          className="absolute inset-x-8 inset-y-0 z-10 cursor-grab active:cursor-grabbing"
-        />
-
-        {/* Trim Left Handle */}
-        <div 
-          onPointerDown={(e) => handlePointerDown(e, 'trim-left')}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          className="absolute left-0 top-0 bottom-0 w-8 z-20 cursor-ew-resize hover:bg-orange-500/10 flex items-center justify-center group active:bg-orange-500/20"
-        >
-          <div className="w-1 h-6 bg-white/10 rounded-full group-active:bg-orange-500" />
-        </div>
-
-        {/* Trim Right Handle */}
-        <div 
-          onPointerDown={(e) => handlePointerDown(e, 'trim-right')}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          className="absolute right-0 top-0 bottom-0 w-8 z-20 cursor-ew-resize hover:bg-orange-500/10 flex items-center justify-center group active:bg-orange-500/20"
-        >
-          <div className="w-1 h-6 bg-white/10 rounded-full group-active:bg-orange-500" />
-        </div>
-
-        {/* Waveform container */}
-        <div 
-          className="absolute top-0 bottom-0 pointer-events-none"
-          style={{ 
-            left: `-${track.trimStart * pixelsPerSecond}px`,
-            width: `${track.buffer.duration * pixelsPerSecond}px`
-          }}
-        >
-          <canvas 
-            ref={canvasRef} 
-            width={track.buffer.duration * pixelsPerSecond} 
-            height={56} 
-            className="w-full h-full opacity-40"
-          />
-        </div>
-
-        {/* Info Overlay */}
-        <div className="absolute top-1 left-9 right-1 z-30 flex items-center justify-between pointer-events-none">
-          <div className="flex items-center gap-2">
-            <div className="bg-black/80 backdrop-blur-md px-2 py-0.5 rounded text-[8px] font-bold text-white/50 uppercase tracking-widest border border-white/5 whitespace-nowrap overflow-hidden max-w-[120px] truncate">
-              {track.name}
+        {/* Timeline Header */}
+        <div className="h-6 bg-[#0a0a0a] border-b border-white/5 sticky top-0 z-40 flex items-end">
+          {Array.from({ length: Math.ceil(maxWidth / pixelsPerSecond) + 1 }).map((_, i) => (
+            <div key={i} className="absolute bottom-0 border-l border-white/10 h-2" style={{ left: `${i * pixelsPerSecond}px` }}>
+              <span className="absolute -top-4 -left-2 text-[8px] text-white/20 font-mono tracking-tighter">{i}s</span>
             </div>
-            <div className="bg-orange-500/20 text-orange-500 text-[7px] font-bold px-1 rounded border border-orange-500/20">
-              {track.duration.toFixed(1)}s
+          ))}
+        </div>
+
+        {/* Lane Grid */}
+        <div className="absolute inset-x-0 top-6 bottom-0 pointer-events-none opacity-[0.03]">
+          {tracks.map((_, i) => (
+            <div key={i} className="h-16 border-b border-white" />
+          ))}
+          <div className="absolute inset-0" style={{ backgroundImage: `linear-gradient(to right, white 1px, transparent 1px)`, backgroundSize: `${pixelsPerSecond}px 100%` }} />
+        </div>
+
+        {/* Tracks List (Lanes) */}
+        <div className="mt-4 space-y-2 relative z-20">
+          {tracks.map((track) => (
+            <div key={track.id} className="h-16 flex group">
+              <div className="w-10 flex-shrink-0 bg-[#0a0a0a] border-r border-white/5 flex items-center justify-center relative">
+                 <div className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: track.color }} />
+                 <span className="[writing-mode:vertical-lr] rotate-180 text-[7px] font-black text-white/20 uppercase tracking-widest">{track.name}</span>
+              </div>
+              <div className="flex-1 relative">
+                {clips.filter(c => c.trackId === track.id).map(clip => (
+                  <ClipItem 
+                    key={clip.id}
+                    clip={clip}
+                    pixelsPerSecond={pixelsPerSecond}
+                    onUpdate={(u) => onUpdateClip(clip.id, u)}
+                    onDelete={() => onDeleteClip(clip.id)}
+                  />
+                ))}
+              </div>
             </div>
-          </div>
-          
-          <button 
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete();
-            }}
-            className="w-6 h-6 bg-red-500/20 text-red-500 rounded-lg flex items-center justify-center active:scale-90 transition-transform pointer-events-auto border border-red-500/20"
-          >
-            <Trash2 className="w-3 h-3" />
-          </button>
+          ))}
+        </div>
+
+        {/* Playhead */}
+        <div 
+          className="absolute top-0 bottom-0 w-[1px] bg-red-500 z-30 pointer-events-none shadow-[0_0_15px_rgba(239,68,68,0.8)]"
+          style={{ left: `${currentTime * pixelsPerSecond}px` }}
+        >
+          <div className="w-3 h-3 bg-red-500 rounded-full -translate-x-[5.5px] mt-[1.5px] shadow-lg border border-white/20" />
         </div>
       </div>
     </div>
   );
+};
+
+const ClipItem: React.FC<{ 
+  clip: TrackClip, pixelsPerSecond: number, onUpdate: (u: Partial<TrackClip>) => void, onDelete: () => void 
+}> = ({ clip, pixelsPerSecond, onUpdate, onDelete }) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const dragRef = useRef<{ startX: number, initialOffset: number } | null>(null);
+
+  useEffect(() => {
+    if (clip.data.type === 'audio' && canvasRef.current) {
+      drawWaveform(clip.data.buffer, canvasRef.current, '#f97316');
+    }
+  }, [clip]);
+
+  return (
+    <motion.div
+      drag="x"
+      dragMomentum={false}
+      onDrag={(_, info) => {
+        const deltaSeconds = info.delta.x / pixelsPerSecond;
+        onUpdate({ offset: Math.max(0, clip.offset + deltaSeconds) });
+      }}
+      className={`absolute h-14 rounded-lg border overflow-hidden cursor-grab active:cursor-grabbing transition-shadow ${clip.data.type === 'audio' ? 'bg-[#1a1a1a] border-orange-500/30' : 'bg-[#1a1a1a] border-blue-500/30'}`}
+      style={{ 
+        width: `${clip.duration * pixelsPerSecond}px`,
+        left: `${clip.offset * pixelsPerSecond}px`
+      }}
+    >
+      {clip.data.type === 'audio' ? (
+        <div className="absolute inset-0 opacity-20">
+          <canvas ref={canvasRef} width={clip.duration * pixelsPerSecond} height={56} className="w-full h-full" />
+        </div>
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center opacity-10">
+           <Piano className="w-8 h-8" />
+        </div>
+      )}
+      <div className="absolute top-1 left-2 flex items-center gap-2">
+         <span className="text-[8px] font-black uppercase tracking-tighter bg-black/60 px-1.5 rounded">{clip.data.type === 'audio' ? 'AUDIO' : 'PATTERN'}</span>
+         <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="p-0.5 hover:text-red-500 transition-colors"><Trash2 className="w-3 h-3"/></button>
+      </div>
+    </motion.div>
+  );
+};
+
+interface ChannelRackViewProps {
+  instruments: Instrument[];
+  patterns: Pattern[];
+  onUpdateInstrument: (id: string, updates: Partial<Instrument>) => void;
+  onAddPattern: () => void;
 }
+
+const ChannelRackView: React.FC<ChannelRackViewProps> = ({ instruments, patterns, onUpdateInstrument, onAddPattern }) => {
+  return (
+    <div className="flex-1 flex flex-col p-6 overflow-hidden">
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-xl font-black italic tracking-tighter uppercase">Channel Rack</h2>
+        <button onClick={onAddPattern} className="bg-orange-500 text-black px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2">
+           <Plus className="w-4 h-4" /> ADD CHANNEL
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto space-y-2">
+        {instruments.map(inst => (
+          <div key={inst.id} className="flex items-center gap-4 bg-[#111] p-3 rounded-2xl border border-white/5 group hover:border-orange-500/20 transition-all">
+            <div className="flex items-center gap-2">
+                <div className="w-1 h-8 rounded-full" style={{ backgroundColor: inst.color }} />
+                <button className="w-8 h-8 bg-white/5 rounded-lg flex items-center justify-center"><Volume2 className="w-4 h-4 opacity-40" /></button>
+            </div>
+            
+            <div className="flex-1">
+              <span className="text-xs font-bold opacity-80">{inst.name}</span>
+              <div className="text-[8px] text-white/20 uppercase font-black tracking-widest">{inst.type}</div>
+            </div>
+
+            <div className="flex gap-1">
+              {Array.from({ length: 16 }).map((_, i) => (
+                <div 
+                  key={i} 
+                  className={`w-6 h-8 rounded-sm transition-all cursor-pointer ${i % 4 === 0 ? 'opacity-100' : 'opacity-40'} ${i < 4 || (i >= 8 && i < 12) ? 'bg-[#333]' : 'bg-[#555]'}`}
+                />
+              ))}
+            </div>
+
+            <button className="p-2 text-white/10 hover:text-white/40"><Settings2 className="w-4 h-4" /></button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+interface PianoRollViewProps {
+  pattern: Pattern;
+  instrument: Instrument;
+  onUpdatePattern: (updates: Partial<Pattern>) => void;
+}
+
+const PianoRollView: React.FC<PianoRollViewProps> = ({ pattern, instrument, onUpdatePattern }) => {
+  const [activeNotes, setActiveNotes] = useState<MidiNote[]>(pattern.notes || []);
+  
+  useEffect(() => {
+     onUpdatePattern({ notes: activeNotes });
+  }, [activeNotes]);
+
+  const toggleNote = (note: number, time: number) => {
+    setActiveNotes(prev => {
+      const exists = prev.find(n => n.note === note && Math.abs(n.time - time) < 0.1);
+      if (exists) return prev.filter(n => n !== exists);
+      return [...prev, { note, time, duration: 0.5, velocity: 0.8 }];
+    });
+  };
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="p-4 border-b border-white/5 flex items-center justify-between bg-[#0a0a0a]">
+        <div className="flex items-center gap-3">
+           <Piano className="w-5 h-5 text-orange-500" />
+           <div>
+              <span className="text-xs font-black uppercase text-white/80">{pattern?.name || 'Piano Roll'}</span>
+              <span className="text-[8px] text-white/20 block tracking-widest">TARGET: {instrument?.name}</span>
+           </div>
+        </div>
+      </div>
+
+      <div className="flex-1 flex overflow-hidden">
+        {/* Piano Keys */}
+        <div className="w-16 bg-[#0a0a0a] border-r border-white/5 flex flex-col-reverse overflow-y-auto">
+          {Array.from({ length: 48 }).map((_, i) => {
+            const note = 36 + i;
+            const isBlack = [1, 3, 6, 8, 10].includes(note % 12);
+            return (
+              <div 
+                key={note} 
+                className={`h-6 flex-shrink-0 border-b border-white/5 px-2 flex items-center justify-end text-[8px] font-mono ${isBlack ? 'bg-black text-white/20' : 'bg-[#222] text-white/60'}`}
+              >
+                {Tone.Frequency(note, "midi").toNote()}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Note Grid */}
+        <div className="flex-1 flex overflow-auto">
+          <div className="relative min-w-full" style={{ width: '2000px', height: `${48 * 24}px` }}>
+            <div className="flex flex-col-reverse h-full">
+               {Array.from({ length: 48 }).map((_, i) => (
+                 <div key={i} className="h-6 flex border-b border-white/5">
+                    {Array.from({ length: 32 }).map((_, j) => {
+                       const note = 36 + i;
+                       const time = j * 0.5;
+                       const isSelected = activeNotes.find(n => n.note === note && Math.abs(n.time - time) < 0.1);
+                       return (
+                         <div 
+                           key={j} 
+                           onClick={() => toggleNote(note, time)}
+                           className={`w-12 h-6 border-r border-white/5 cursor-pointer hover:bg-white/5 transition-colors ${isSelected ? 'bg-orange-500 shadow-inner' : ''}`}
+                         />
+                       );
+                    })}
+                 </div>
+               ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const MixerView: React.FC<{ tracks: PlaybackTrack[], instruments: Instrument[] }> = ({ tracks, instruments }) => {
+  return (
+    <div className="flex-1 flex p-6 bg-[#0a0a0a]/50 gap-2 overflow-x-auto">
+       <div className="w-24 bg-[#111] rounded-2xl border border-white/5 flex flex-col p-3 mr-4">
+          <span className="text-[8px] font-black text-white/20 uppercase tracking-widest text-center mb-4">Master</span>
+          <div className="flex-1 bg-black/40 rounded-lg relative overflow-hidden flex flex-col-reverse p-1">
+             <div className="h-[70%] bg-gradient-to-t from-orange-500 to-red-500 rounded-sm opacity-50 shadow-[0_0_10px_rgba(249,115,22,0.5)]" />
+          </div>
+          <div className="h-24 mt-4 flex items-center justify-center">
+             <div className="w-1 h-full bg-white/5 rounded-full relative">
+                <div className="absolute top-[30%] left-1/2 -translate-x-1/2 w-4 h-6 bg-[#555] rounded-sm border border-white/10" />
+             </div>
+          </div>
+       </div>
+
+       {tracks.map(track => (
+          <div key={track.id} className="w-16 bg-[#111] rounded-2xl border border-white/5 flex flex-col p-2 group hover:border-orange-500/20 transition-all">
+             <span className="text-[7px] font-black text-white/20 uppercase tracking-tighter truncate text-center mb-4">{track.name}</span>
+             <div className="flex-1 bg-black rounded-lg relative overflow-hidden flex flex-col-reverse p-0.5">
+                <div className="h-[40%] bg-orange-500/20 rounded-sm" />
+             </div>
+             <div className="h-20 mt-4 flex items-center justify-center">
+                <div className="w-0.5 h-full bg-white/5 rounded-full relative">
+                   <div className="absolute top-[50%] left-1/2 -translate-x-1/2 w-3 h-5 bg-[#333] rounded-sm border border-white/5" />
+                </div>
+             </div>
+             <div className="mt-2 flex gap-1 justify-center">
+                <div className="w-3 h-3 bg-red-900 rounded-full cursor-pointer" title="Solo" />
+                <div className="w-3 h-3 bg-red-500 rounded-full cursor-pointer" title="Mute" />
+             </div>
+          </div>
+       ))}
+    </div>
+  );
+};
 
 function formatTime(seconds: number) {
   const mins = Math.floor(seconds / 60);

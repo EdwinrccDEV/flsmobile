@@ -7,15 +7,63 @@
 // lamejs is now loaded via CDN in index.html for better compatibility
 const getLame = () => (window as any).lamejs;
 
-export interface AudioTrack {
+export interface MidiNote {
+  note: number; // MIDI note number
+  time: number; // start time in ticks or seconds (seconds easier for this app)
+  duration: number;
+  velocity: number;
+}
+
+export interface Pattern {
   id: string;
   name: string;
+  notes: MidiNote[];
+  color: string;
+}
+
+export type ClipType = 'audio' | 'pattern';
+
+export interface AudioClip {
+  type: 'audio';
   buffer: AudioBuffer;
-  offset: number; // in seconds (where it starts in the timeline)
-  trimStart: number; // seconds to skip from the beginning of the buffer
-  duration: number; // visible duration in seconds
-  volume: number; // 0 to 1
+  trimStart: number;
+}
+
+export interface PatternClip {
+  type: 'pattern';
+  patternId: string;
+  instrumentId: string;
+}
+
+export interface TrackClip {
+  id: string;
+  trackId: string; // which lane in the playlist
+  offset: number; // start time in timeline
+  duration: number; // visible duration
+  data: AudioClip | PatternClip;
+}
+
+export interface Instrument {
+  id: string;
+  name: string;
+  type: 'synth' | 'sampler' | 'sf2';
+  volume: number;
+  pan: number;
   muted: boolean;
+  solo: boolean;
+  color: string;
+  sampleBuffer?: AudioBuffer; // for sampler/slicex
+  slices?: { start: number, end: number, note: number }[]; // for slicex
+  sf2Data?: ArrayBuffer; // if we implement SF2
+}
+
+export interface PlaybackTrack {
+  id: string;
+  name: string;
+  volume: number;
+  muted: boolean;
+  solo: boolean;
+  color: string;
 }
 
 export function bufferToWav(buffer: AudioBuffer): Blob {
